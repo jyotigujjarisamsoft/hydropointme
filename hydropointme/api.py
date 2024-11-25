@@ -1,4 +1,4 @@
-from __future__ import unicode_literals
+btfrom __future__ import unicode_literals
 from xml.etree.ElementTree import tostring
 import frappe
 from frappe import _, msgprint
@@ -103,3 +103,45 @@ def get_sales_order_details(item_code):
         item['posting_date'] = item['posting_date'].strftime('%d-%m-%Y')
 
     return sales_order_items
+
+@frappe.whitelist()
+def get_purchase_order_details(item_code):
+    purchase_order_items = frappe.db.sql("""
+        SELECT
+            po.name AS purchase_order_name,
+            po.supplier AS supplier,
+            po.transaction_date AS posting_date,
+            poi.rate AS item_rate
+        FROM
+            `tabPurchase Order` AS po
+        INNER JOIN
+            `tabPurchase Order Item` AS poi
+        ON
+            po.name = poi.parent
+        WHERE
+            poi.item_code = %(item_code)s
+        ORDER BY
+            po.transaction_date DESC
+        LIMIT 5
+    """, {
+        'item_code': item_code
+    }, as_dict=True)
+
+    # Format the posting_date as dd-mm-yyyy
+    for item in purchase_order_items:
+        item['posting_date'] = item['posting_date'].strftime('%d-%m-%Y')
+
+    return purchase_order_items
+
+@frappe.whitelist()
+def get_sales_order_item_details(sales_order, item_code):
+    # Fetch the Sales Order Item details based on parent (sales_order) and item_code
+    sales_order_items = frappe.get_all('Sales Order Item', filters={
+        'parent': sales_order,
+        'item_code': item_code
+    }, fields=['rate', 'qty'])
+    print("sales_order_items",sales_order_items)
+    if sales_order_items:
+        return sales_order_items[0]  # Return the first matching record (assuming only one match)
+    else:
+        return None  # Return None if no matching record found
