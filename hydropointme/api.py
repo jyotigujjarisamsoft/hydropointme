@@ -39,29 +39,23 @@ def create_landed_cost_voucher(purchase_receipt, purchase_invoice):
         "posting_date":posting_date
     })
 
-    # Fetch Purchase Invoice details to get the expense account
     if purchase_invoice:
-        purchase_invoice_items = frappe.get_all('Purchase Invoice Item', filters={'parent': purchase_invoice}, fields=['expense_account', 'amount', 'description'])
-        if purchase_invoice_items:
-            # Assuming the expense account is the same for all items, pick the first one
-            expense_account = purchase_invoice_items[0].expense_account
-            amount = purchase_invoice_items[0].amount
-            description = purchase_invoice_items[0].description
-        else:
-            expense_account = "Default Expense Account"  # Set a default if no items are found
-            amount = 0
-            description = "Default Description"
-    else:
-        expense_account = "Default Expense Account"
-        amount = 0
-        description = "Default Description"
+        # Fetch purchase invoice items
+        purchase_invoice_items = frappe.get_all(
+            'Purchase Invoice Item', 
+            filters={'parent': purchase_invoice}, 
+            fields=['expense_account', 'amount', 'description', 'item_code']
+        )
+        print("purchase_invoice_items", purchase_invoice_items)
+        
+        # Add taxes and charges for each purchase invoice item
+        for item in purchase_invoice_items:
+            lcv.append("taxes", {
+                "description": item.get('item_code'),  # Combine description and item code
+                "expense_account": item.get('expense_account'),  # Use expense account from Purchase Invoice Item
+                "amount": item.get('amount')  # Use amount from Purchase Invoice Item
+            })
 
-    # Add default taxes and charges
-    lcv.append("taxes", {
-        "description": description,
-        "expense_account": expense_account,  # Autofilled expense account from Purchase Invoice
-        "amount": amount  # Example fixed tax amount
-    })
 
     # Trigger the built-in method to fetch items
     lcv.flags.ignore_permissions = True  # To ensure custom script permissions
