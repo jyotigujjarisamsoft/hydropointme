@@ -70,7 +70,7 @@ def create_purchase_invoice(voucher_name):
         frappe.throw("No items found in Petty Cash Voucher Details.")
 
     # Set the value of the custom field with the total tax amount
-    purchase_invoice.custom_recoverable_standard_rated_expenses_aed = total_tax_amount
+    purchase_invoice.recoverable_standard_rated_expenses = total_tax_amount
 
     # Insert and submit the Purchase Invoice
     purchase_invoice.insert()  # Save the Purchase Invoice
