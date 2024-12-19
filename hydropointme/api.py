@@ -39,7 +39,7 @@ def create_purchase_invoice(voucher_name):
             "description": row.description,  # Map the description
             "item_tax_template": row.vat_type,  # Map the VAT type
             "expense_account": row.expenses_account,  # Correct fieldname for the expense account
-            "remarks": row.remarks,  # Add remarks
+            "custom_remarks": row.remarks,  # Add remarks
         }
         purchase_invoice.append("items", item)
 
