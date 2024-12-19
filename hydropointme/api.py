@@ -8,6 +8,77 @@ from datetime import datetime
 from datetime import date
 import json 
 
+@frappe.whitelist()
+def create_purchase_invoice(voucher_name):
+    # Fetch the Petty Cash Voucher document
+    voucher = frappe.get_doc("Petty Cash Voucher", voucher_name)
+    print("Fetched Voucher:", voucher)
+
+    # Create a new Purchase Invoice
+    purchase_invoice = frappe.new_doc("Purchase Invoice")
+    purchase_invoice.naming_series = "PTY-.YYYY.-"
+    purchase_invoice.supplier = "Petty Cash"  # Static supplier for Petty Cash
+    purchase_invoice.is_paid = 1  # Check 'Is Paid' checkbox
+    purchase_invoice.posting_date = voucher.date  # Use the date from the voucher
+    purchase_invoice.due_date = voucher.date  # Set the due date as the voucher date
+    purchase_invoice.mode_of_payment = "Petty Cash"
+    purchase_invoice.cash_bank_account = voucher.credit_account
+    #purchase_invoice.branch = "Dubai"
+
+    # Dictionary to store consolidated taxes
+    tax_totals = {}
+    total_tax_amount = 0.0  # Initialize the total tax amount
+
+    # Add items to the Purchase Invoice
+    for row in voucher.voucher_details:
+        print("Processing row:", row)
+        item = {
+            "item_code": "Service Items",  # Replace with the default or dynamic item code
+            "qty": 1,  # Default quantity to 1
+            "rate": row.value,  # Map the rate to the 'value' field
+            "description": row.description,  # Map the description
+            "item_tax_template": row.vat_type,  # Map the VAT type
+            "expense_account": row.expenses_account,  # Correct fieldname for the expense account
+            "remarks": row.remarks,  # Add remarks
+        }
+        purchase_invoice.append("items", item)
+
+        # Calculate taxes based on Item Tax Template
+        if row.vat_type:  # Ensure VAT type exists
+            tax_template = frappe.get_doc("Item Tax Template", row.vat_type)
+            for tax in tax_template.taxes:  # Loop through taxes in the template
+                tax_key = tax.tax_type
+                if tax_key not in tax_totals:
+                    tax_totals[tax_key] = 0.0
+                # Accumulate the tax amount for the item
+                tax_amount = row.value * tax.tax_rate / 100
+                tax_totals[tax_key] += tax_amount
+                total_tax_amount += tax_amount  # Add to total tax amount
+
+    # Populate the Purchase Taxes and Charges table
+    for tax_type, tax_amount in tax_totals.items():
+        purchase_invoice.append("taxes", {
+            "charge_type": "On Net Total",
+            "account_head": "VAT 5% - HP",  # Tax account head from the template
+            "rate": 0,  # Set to 0, as we're using amount
+            "tax_amount": tax_amount,  # Consolidated tax amount
+            "description": f"Tax calculated for {tax_type}",  # Add description
+        })
+
+    # Throw an error if no items are found
+    if not purchase_invoice.items:
+        frappe.throw("No items found in Petty Cash Voucher Details.")
+
+    # Set the value of the custom field with the total tax amount
+    purchase_invoice.custom_recoverable_standard_rated_expenses_aed = total_tax_amount
+
+    # Insert and submit the Purchase Invoice
+    purchase_invoice.insert()  # Save the Purchase Invoice
+    purchase_invoice.submit()  # Submit the Purchase Invoice
+
+    # Log and return the created Purchase Invoice name
+    frappe.msgprint(f"Purchase Invoice {purchase_invoice.name} created successfully!")
+    return purchase_invoice.name
 
 @frappe.whitelist()
 def create_landed_cost_voucher(purchase_receipt, purchase_invoice):
