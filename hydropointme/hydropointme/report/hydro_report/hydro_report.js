@@ -37,7 +37,10 @@ frappe.query_reports["Hydro Report"] = {
                 "Ajman",
                 "Umm Al Quwain",
                 "Ras Al Khaimah",
-                "Fujairah"
+                "Fujairah",
+				"Zero Rated",
+				"Exempt Supplies",
+				"Expenses"
             ]
         }
     ]
