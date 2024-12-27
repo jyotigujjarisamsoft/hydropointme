@@ -92,12 +92,18 @@ def get_sales_invoice_data(filters):
     # Join conditions into a single string
     condition_string = " AND ".join(conditions) or "1=1"
 
+    # Modify the query to leave total_tax_amount empty or set to '-' for Zero Rated and Exempt Supplies
+    if filters.get("vat_emirate") in ["Zero Rated", "Exempt Supplies"]:
+        tax_column = "'-' AS total_tax_amount"  # This will show "-" in the total_tax_amount column
+    else:
+        tax_column = "SUM(i.tax_amount) AS total_tax_amount"
+
     # Query for Sales Invoices
     query = f"""
         SELECT
             s.name AS sales_invoice_name,
             SUM(i.base_amount) AS total_base_amount,
-            SUM(i.tax_amount) AS total_tax_amount
+            {tax_column}
         FROM
             `tabSales Invoice Item` i
         INNER JOIN 
