@@ -210,3 +210,275 @@ def get_sales_order_item_details(sales_order, item_code):
         return sales_order_items[0]  # Return the first matching record (assuming only one match)
     else:
         return None  # Return None if no matching record found
+
+@frappe.whitelist()
+def update_custom_fields_on_submit(doc_name):
+    """
+    Update custom_rate_hidden and custom_amount_hidden for Delivery Note Items on submit.
+    """
+    delivery_note = frappe.get_doc("Delivery Note", doc_name)
+    
+    for item in delivery_note.items:
+        if item.against_sales_order and item.item_code:
+            sales_order_item = frappe.get_value(
+                "Sales Order Item",
+                {"parent": item.against_sales_order, "item_code": item.item_code},
+                ["rate", "qty"],
+                as_dict=True
+            )
+            if sales_order_item:
+                item.custom_rate_hidden = sales_order_item["rate"]
+                item.custom_amount_hidden = sales_order_item["qty"] * sales_order_item["rate"]
+    
+    # Save the document after modifications
+    delivery_note.save()
+    frappe.db.commit()
+    return {"status": "success"}
+
+@frappe.whitelist()
+def update_pending_qty(proforma_invoice):
+    """
+    Update pending_qty in Proforma Invoice items based on the total delivered quantities
+    from all Delivery Notes created against the Proforma Invoice.
+    """
+    # Fetch the Proforma Invoice document
+    proforma_invoice_doc = frappe.get_doc("Proforma Invoice", proforma_invoice)
+
+    # Fetch all Delivery Note items linked to this Proforma Invoice
+    delivery_note_items = frappe.db.sql(
+        """
+        SELECT 
+            dn_item.item_code, 
+            dn_item.qty, 
+            dn_item.custom_against_proforma_invoice_item 
+        FROM 
+            `tabDelivery Note Item` dn_item
+        INNER JOIN 
+            `tabDelivery Note` dn
+        ON 
+            dn.name = dn_item.parent
+        WHERE 
+            dn.custom_proforma_invoice = %s
+            AND EXISTS (
+                SELECT 1 
+                FROM `tabPerforma Invoice Items` pi_item
+                WHERE pi_item.name = dn_item.custom_against_proforma_invoice_item
+                AND pi_item.parent = %s
+            )
+        """,
+        (proforma_invoice, proforma_invoice),
+        as_dict=True,
+    )
+
+    # Calculate total delivered quantities per item
+    delivered_quantities = {}
+    for dn_item in delivery_note_items:
+        proforma_item = dn_item.get("custom_against_proforma_invoice_item")
+        delivered_quantities[proforma_item] = (
+            delivered_quantities.get(proforma_item, 0) + dn_item.get("qty", 0)
+        )
+
+    # Update pending_qty in Proforma Invoice items
+    for pi_item in proforma_invoice_doc.items:
+        total_delivered_qty = delivered_quantities.get(pi_item.name, 0)
+        pi_item.pending_qty = max(pi_item.pi_qty - total_delivered_qty, 0)
+
+    # Save the updated Proforma Invoice
+    proforma_invoice_doc.save()
+    frappe.db.commit()
+
+    return {"status": "success"}
+
+@frappe.whitelist()
+def update_custom_pi_pending_qty(sales_order, item_code, sales_order_item):
+    """
+    Update the custom_pi_pending_qty field in Sales Order Item
+    for the given sales_order, item_code, and sales_order_item.
+    """
+    # Fetch the Sales Order Item
+    sales_order_item_data = frappe.get_doc("Sales Order Item", sales_order_item)
+
+    if not sales_order_item_data:
+        frappe.throw(f"No Sales Order Item found with name {sales_order_item} for Sales Order {sales_order} and Item Code {item_code}.")
+
+    # Fetch the total pi_qty for the item_code where sales_order_item matches
+    total_pi_qty = frappe.db.sql("""
+        SELECT SUM(pi_qty) as total_pi_qty
+        FROM `tabPerforma Invoice Items`
+        WHERE sales_order = %s AND item = %s AND sales_order_item = %s
+    """, (sales_order, item_code, sales_order_item), as_dict=True)[0].get("total_pi_qty", 0) or 0
+
+    # Calculate pending quantity
+    custom_pi_pending_qty = sales_order_item_data.qty - total_pi_qty
+
+    # Update the custom_pi_pending_qty field in Sales Order Item
+    frappe.db.set_value(
+        "Sales Order Item",
+        sales_order_item,
+        "custom_pi_pending_qty",
+        custom_pi_pending_qty
+    )
+
+@frappe.whitelist()
+def get_pending_delivery_items(proforma_invoice):
+    """
+    Fetch items from Proforma Invoice that are not yet fully delivered in Delivery Notes,
+    including additional details like item_name and stock_uom from the Item table.
+    """
+    # Fetch Proforma Invoice Items with additional details from the Item table
+    proforma_items = frappe.db.sql(
+        """
+        SELECT 
+            pii.idx,
+            pii.name AS proforma_invoice_item_name,
+            pii.item AS item_code,
+            pii.description,
+            pii.pi_qty AS qty,
+            pii.rate,
+            pii.amount,
+            pii.sales_order,
+            pii.sales_order_item,
+            it.item_name,
+            it.stock_uom
+        FROM 
+            `tabPerforma Invoice Items` pii
+        LEFT JOIN 
+            `tabItem` it ON pii.item = it.name
+        WHERE 
+            pii.parent = %s
+        ORDER BY 
+            pii.idx ASC
+        """,
+        (proforma_invoice,),
+        as_dict=True
+    )
+
+    # Fetch Delivery Note Items linked to the Proforma Invoice Items
+    dn_items = frappe.db.sql(
+        """
+        SELECT 
+            dni.custom_against_proforma_invoice_item,
+            dni.item_code,
+            SUM(dni.qty) AS total_delivered_qty
+        FROM 
+            `tabDelivery Note Item` dni
+        WHERE 
+            dni.custom_against_proforma_invoice = %s
+        GROUP BY 
+            dni.item_code, dni.custom_against_proforma_invoice_item
+        """,
+        (proforma_invoice,),
+        as_dict=True
+    )
+
+    # Map total delivered quantities
+    dn_items_map = {
+        (item["item_code"], item["custom_against_proforma_invoice_item"]): item["total_delivered_qty"] for item in dn_items
+    }
+
+    # Prepare pending items
+    pending_items = []
+    for item in proforma_items:
+        total_delivered_qty = dn_items_map.get((item["item_code"], item["proforma_invoice_item_name"]), 0)
+        pending_qty = item["qty"] - total_delivered_qty
+
+        if pending_qty > 0:
+            pending_items.append({
+                "idx": item["idx"],
+                "proforma_invoice_item_name": item["proforma_invoice_item_name"],
+                "item_code": item["item_code"],
+                "item_name": item["item_name"],  # Add item_name
+                "stock_uom": item["stock_uom"],  # Add stock_uom
+                "description": item["description"],
+                "qty": item["qty"],
+                "custom_delivery_pending_qty": pending_qty,
+                "rate": item["rate"],
+                "amount": item["rate"] * pending_qty,
+                "sales_order": item["sales_order"],
+                "sales_order_item_name": item["sales_order_item"]
+            })
+
+    return pending_items
+
+@frappe.whitelist()
+def get_pending_items(sales_order):
+    """
+    Fetch items from Sales Order that are not yet fully accounted for in Proforma Invoice Items.
+    """
+    # Check if the user has read permissions for the Sales Order
+    if not frappe.has_permission(doctype="Sales Order", doc=sales_order, ptype="read"):
+        frappe.throw("You do not have enough permissions to access this resource. Please contact your manager.")
+
+    # Get all items from the Sales Order, including their original index (idx)
+    sales_order_items = frappe.db.sql(
+        """
+        SELECT 
+            soi.idx,
+            soi.name AS sales_order_item_name,
+            soi.item_code,
+            soi.description,
+            soi.qty,
+            soi.rate,
+            soi.amount,
+            soi.actual_qty AS stock_on_hand,
+            soi.custom_pi_pending_qty
+        FROM 
+            `tabSales Order Item` soi
+        WHERE 
+            soi.parent = %s
+        ORDER BY 
+            soi.idx ASC
+        """,
+        (sales_order,),
+        as_dict=True
+    )
+
+    # Get all Proforma Invoice Items related to this Sales Order
+    pi_items = frappe.db.sql(
+        """
+        SELECT 
+            pii.sales_order_item,  -- Add Sales Order Item field
+            pii.item AS item_code,
+            SUM(pii.pi_qty) AS total_pi_qty
+        FROM 
+            `tabPerforma Invoice Items` pii
+        WHERE 
+            pii.sales_order = %s
+        GROUP BY 
+            pii.item, pii.sales_order_item  -- Group by both item_code and sales_order_item
+        """,
+        (sales_order,),
+        as_dict=True
+    )
+
+    # Map total `pi_qty` for each sales_order_item
+    pi_items_map = {
+        (item["item_code"], item["sales_order_item"]): item["total_pi_qty"] for item in pi_items
+    }
+
+    # Prepare list of pending items
+    pending_items = []
+    for item in sales_order_items:
+        # Calculate the total Proforma Invoice quantity for this item using item_code and sales_order_item
+        total_pi_qty = pi_items_map.get((item["item_code"], item["sales_order_item_name"]), 0)
+
+        # Calculate the actual pending quantity
+        pending_qty = item["qty"] - total_pi_qty
+
+        # Ensure pending quantity is accurate and greater than zero
+        if pending_qty > 0:
+            pending_items.append({
+                "idx": item["idx"],  # Include the original index
+                "sales_order_item_name": item["sales_order_item_name"],
+                "item_code": item["item_code"],
+                "description": item["description"],
+                "qty": item["qty"],
+                "custom_pi_pending_qty": pending_qty,
+                "rate": item["rate"],
+                "amount": item["rate"] * pending_qty,
+                "stock_on_hand": item["stock_on_hand"],
+            })
+
+    # Return the pending items sorted by their original index
+    pending_items.sort(key=lambda x: x["idx"])
+    return pending_items
