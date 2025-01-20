@@ -323,7 +323,7 @@ def update_custom_pi_pending_qty(sales_order, item_code, sales_order_item):
 def get_pending_delivery_items(proforma_invoice):
     """
     Fetch items from Proforma Invoice that are not yet fully delivered in Delivery Notes,
-    including additional details like item_name and stock_uom from the Item table.
+    including additional details like item_name, stock_uom, and stock_on_hand from the Bin table.
     """
     # Fetch Proforma Invoice Items with additional details from the Item table
     proforma_items = frappe.db.sql(
@@ -338,6 +338,7 @@ def get_pending_delivery_items(proforma_invoice):
             pii.amount,
             pii.sales_order,
             pii.sales_order_item,
+            pii.warehouse,  -- Fetch warehouse from Proforma Invoice Item
             it.item_name,
             it.stock_uom
         FROM 
@@ -376,11 +377,38 @@ def get_pending_delivery_items(proforma_invoice):
         (item["item_code"], item["custom_against_proforma_invoice_item"]): item["total_delivered_qty"] for item in dn_items
     }
 
+    # Fetch stock_on_hand from Bin table using proper parameterization
+    item_codes = [item["item_code"] for item in proforma_items if item.get("item_code")]
+    warehouses = [item["warehouse"] for item in proforma_items if item.get("warehouse")]
+
+    bin_items = frappe.db.sql(
+        """
+        SELECT 
+            bin.item_code,
+            bin.warehouse,
+            bin.actual_qty AS stock_on_hand
+        FROM 
+            `tabBin` bin
+        WHERE 
+            bin.item_code IN %s AND bin.warehouse IN %s
+        """,
+        (tuple(item_codes), tuple(warehouses)),
+        as_dict=True
+    )
+
+    # Create a map for stock_on_hand by item_code and warehouse
+    bin_items_map = {
+        (bin_item["item_code"], bin_item["warehouse"]): bin_item["stock_on_hand"] for bin_item in bin_items
+    }
+
     # Prepare pending items
     pending_items = []
     for item in proforma_items:
         total_delivered_qty = dn_items_map.get((item["item_code"], item["proforma_invoice_item_name"]), 0)
         pending_qty = item["qty"] - total_delivered_qty
+
+        # Fetch stock_on_hand for the item from the Bin map
+        stock_on_hand = bin_items_map.get((item["item_code"], item["warehouse"]), 0)
 
         if pending_qty > 0:
             pending_items.append({
@@ -395,7 +423,9 @@ def get_pending_delivery_items(proforma_invoice):
                 "rate": item["rate"],
                 "amount": item["rate"] * pending_qty,
                 "sales_order": item["sales_order"],
-                "sales_order_item_name": item["sales_order_item"]
+                "sales_order_item_name": item["sales_order_item"],
+                "warehouse": item["warehouse"],
+                "stock_on_hand": stock_on_hand,  # Add stock_on_hand
             })
 
     return pending_items
@@ -409,7 +439,7 @@ def get_pending_items(sales_order):
     if not frappe.has_permission(doctype="Sales Order", doc=sales_order, ptype="read"):
         frappe.throw("You do not have enough permissions to access this resource. Please contact your manager.")
 
-    # Get all items from the Sales Order, including their original index (idx)
+    # Get all items from the Sales Order, including their stock from the Bin doctype
     sales_order_items = frappe.db.sql(
         """
         SELECT 
@@ -420,10 +450,15 @@ def get_pending_items(sales_order):
             soi.qty,
             soi.rate,
             soi.amount,
-            soi.actual_qty AS stock_on_hand,
-            soi.custom_pi_pending_qty
+            COALESCE(bin.actual_qty, 0) AS stock_on_hand,  -- Fetch stock from Bin
+            soi.custom_pi_pending_qty,
+            soi.warehouse  -- Include warehouse in query
         FROM 
             `tabSales Order Item` soi
+        LEFT JOIN 
+            `tabBin` bin
+        ON 
+            bin.item_code = soi.item_code AND bin.warehouse = soi.warehouse
         WHERE 
             soi.parent = %s
         ORDER BY 
@@ -477,6 +512,7 @@ def get_pending_items(sales_order):
                 "rate": item["rate"],
                 "amount": item["rate"] * pending_qty,
                 "stock_on_hand": item["stock_on_hand"],
+                "warehouse": item["warehouse"],  # Include warehouse in the response
             })
 
     # Return the pending items sorted by their original index
