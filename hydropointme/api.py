@@ -338,7 +338,7 @@ def get_pending_delivery_items(proforma_invoice):
             pii.amount,
             pii.sales_order,
             pii.sales_order_item,
-            pii.warehouse,  -- Fetch warehouse from Proforma Invoice Item
+            pii.warehouse,
             it.item_name,
             it.stock_uom
         FROM 
@@ -374,31 +374,36 @@ def get_pending_delivery_items(proforma_invoice):
 
     # Map total delivered quantities
     dn_items_map = {
-        (item["item_code"], item["custom_against_proforma_invoice_item"]): item["total_delivered_qty"] for item in dn_items
+        (item["item_code"], item["custom_against_proforma_invoice_item"]): item["total_delivered_qty"]
+        for item in dn_items
     }
 
     # Fetch stock_on_hand from Bin table using proper parameterization
-    item_codes = [item["item_code"] for item in proforma_items if item.get("item_code")]
-    warehouses = [item["warehouse"] for item in proforma_items if item.get("warehouse")]
+    item_codes = list({item["item_code"] for item in proforma_items if item.get("item_code")})
+    warehouses = list({item["warehouse"] for item in proforma_items if item.get("warehouse")})
 
-    bin_items = frappe.db.sql(
-        """
-        SELECT 
-            bin.item_code,
-            bin.warehouse,
-            bin.actual_qty AS stock_on_hand
-        FROM 
-            `tabBin` bin
-        WHERE 
-            bin.item_code IN %s AND bin.warehouse IN %s
-        """,
-        (tuple(item_codes), tuple(warehouses)),
-        as_dict=True
-    )
+    # Prevent query errors due to empty lists
+    bin_items = []
+    if item_codes and warehouses:
+        bin_items = frappe.db.sql(
+            """
+            SELECT 
+                bin.item_code,
+                bin.warehouse,
+                bin.actual_qty AS stock_on_hand
+            FROM 
+                `tabBin` bin
+            WHERE 
+                bin.item_code IN %(item_codes)s AND bin.warehouse IN %(warehouses)s
+            """,
+            {"item_codes": tuple(item_codes), "warehouses": tuple(warehouses)},
+            as_dict=True
+        )
 
     # Create a map for stock_on_hand by item_code and warehouse
     bin_items_map = {
-        (bin_item["item_code"], bin_item["warehouse"]): bin_item["stock_on_hand"] for bin_item in bin_items
+        (bin_item["item_code"], bin_item["warehouse"]): bin_item["stock_on_hand"]
+        for bin_item in bin_items
     }
 
     # Prepare pending items
@@ -415,8 +420,8 @@ def get_pending_delivery_items(proforma_invoice):
                 "idx": item["idx"],
                 "proforma_invoice_item_name": item["proforma_invoice_item_name"],
                 "item_code": item["item_code"],
-                "item_name": item["item_name"],  # Add item_name
-                "stock_uom": item["stock_uom"],  # Add stock_uom
+                "item_name": item["item_name"],
+                "stock_uom": item["stock_uom"],
                 "description": item["description"],
                 "qty": item["qty"],
                 "custom_delivery_pending_qty": pending_qty,
@@ -425,11 +430,11 @@ def get_pending_delivery_items(proforma_invoice):
                 "sales_order": item["sales_order"],
                 "sales_order_item_name": item["sales_order_item"],
                 "warehouse": item["warehouse"],
-                "stock_on_hand": stock_on_hand,  # Add stock_on_hand
+                "stock_on_hand": stock_on_hand,
             })
 
     return pending_items
-
+    
 @frappe.whitelist()
 def get_pending_items(sales_order):
     """
