@@ -523,3 +523,87 @@ def get_pending_items(sales_order):
     # Return the pending items sorted by their original index
     pending_items.sort(key=lambda x: x["idx"])
     return pending_items
+
+@frappe.whitelist()
+def get_payment_entry_detail(payment_entry):
+    """
+    Fetch details of a single Payment Entry, including account type.
+    """
+    try:
+        if not payment_entry:
+            frappe.throw(_("Payment Entry is required"))
+
+        payment_data = frappe.db.sql(
+            """
+            SELECT
+                pe.name, pe.party_type, pe.party, pe.paid_from, pe.paid_to,
+                pe.paid_amount, pe.reference_no, pe.reference_date, pe.posting_date,
+                acc.account_type
+            FROM
+                `tabPayment Entry` pe
+            JOIN
+                `tabAccount` acc ON pe.paid_from = acc.name
+            WHERE
+                pe.name = %s
+            """,
+            payment_entry,
+            as_dict=True,
+        )
+
+        if not payment_data:
+            frappe.throw(_("No Payment Entry found for ID {0}").format(payment_entry))
+
+        return payment_data[0]
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Error fetching payment entry details")
+        frappe.throw(_("Error fetching payment entry details: {0}").format(str(e)))
+
+@frappe.whitelist()
+def update_clearance_date(payment_entry, clearance_date):
+    """
+    Update clearance date for the specified Payment Entry.
+    """
+    if not payment_entry or not clearance_date:
+        frappe.throw(_("Payment Entry and Clearance Date are required."))
+
+    try:
+        # Fetch the Payment Entry document
+        payment_entry_doc = frappe.get_doc("Payment Entry", payment_entry)
+        
+        # Update the clearance_date field
+        payment_entry_doc.db_set("clearance_date", clearance_date)
+        
+        # Success message
+        frappe.msgprint(_("Clearance Date updated successfully for Payment Entry: {0}".format(payment_entry)))
+        return {"status": "success", "message": "Clearance Date updated successfully."}
+    
+    except frappe.DoesNotExistError:
+        frappe.throw(_("Payment Entry {0} does not exist.".format(payment_entry)))
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), _("Error updating clearance date"))
+        frappe.throw(_("An error occurred while updating the clearance date: {0}".format(str(e))))
+
+@frappe.whitelist()
+def get_tax_rate(template_name):
+    print("inside")
+    """
+    Fetch the tax rate from the first row of the Sales Taxes and Charges Template's child table using SQL query.
+    """
+    if not template_name:
+        return None
+
+    # Fetch the rate using an SQL query
+    tax_rate = frappe.db.sql(
+        """
+        SELECT rate
+        FROM `tabSales Taxes and Charges`
+        WHERE parent = %s
+        LIMIT 1
+        """,
+        template_name,
+        as_dict=True
+    )
+    print("tax_rate",tax_rate)
+    # Return the rate if found, otherwise None
+    return tax_rate[0]["rate"] if tax_rate else None
+
