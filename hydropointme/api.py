@@ -614,7 +614,7 @@ import re
 from frappe.utils import nowdate
 
 @frappe.whitelist()
-def create_journal_entry(bank_account, account, payment_entries):
+def create_journal_entry(bank_account, account, payment_entries,final_total_amount):
     if not payment_entries:
         frappe.throw("No payment entries found to process.")
 
@@ -629,31 +629,24 @@ def create_journal_entry(bank_account, account, payment_entries):
         frappe.throw("Payment entries should be a list of dictionaries.")
 
 
-    def extract_amount(amount_str):
-        """Extracts numeric values from an amount string, removing currency symbols and text."""
-        cleaned_str = re.sub(r"[^\d.]", "", str(amount_str))  # Remove non-numeric characters except for the dot
-        try:
-            return float(cleaned_str) if cleaned_str else 0
-        except ValueError:
-            return 0
+    
     
 
-    # Extract and sum up amounts
-    total_amount = sum(extract_amount(entry.get("amount", "0")) for entry in payment_entries)
+    
 
-    if total_amount == 0:
+    if final_total_amount == 0:
         frappe.throw("Total amount is zero. Cannot create Journal Entry.")
 
     accounts = [
         {
             "account": account,
-            "debit_in_account_currency": total_amount if account == "PDC Payables - HP" else 0,
-            "credit_in_account_currency": 0 if account == "PDC Payables - HP" else total_amount,
+            "debit_in_account_currency": final_total_amount if account == "PDC Payables - HP" else 0,
+            "credit_in_account_currency": 0 if account == "PDC Payables - HP" else final_total_amount,
         },
         {
             "account": bank_account,
-            "debit_in_account_currency": 0 if account == "PDC Payables - HP" else total_amount,
-            "credit_in_account_currency": total_amount if account == "PDC Payables - HP" else 0,
+            "debit_in_account_currency": 0 if account == "PDC Payables - HP" else final_total_amount,
+            "credit_in_account_currency": final_total_amount if account == "PDC Payables - HP" else 0,
         },
     ]
 
