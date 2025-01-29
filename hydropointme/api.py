@@ -608,8 +608,10 @@ def get_tax_rate(template_name):
     # Return the rate if found, otherwise None
     return tax_rate[0]["rate"] if tax_rate else None
 
-import re
+
 import json
+import re
+from frappe.utils import nowdate
 
 @frappe.whitelist()
 def create_journal_entry(bank_account, account, payment_entries):
@@ -627,9 +629,14 @@ def create_journal_entry(bank_account, account, payment_entries):
         frappe.throw("Payment entries should be a list of dictionaries.")
 
     def extract_amount(amount_str):
-        match = re.search(r"[-+]?[0-9]*\.?[0-9]+", str(amount_str))
-        return float(match.group()) if match else 0
+        """Extracts numeric values from an amount string, removing currency symbols and text."""
+        cleaned_str = re.sub(r"[^\d.]", "", str(amount_str))  # Remove non-numeric characters except dot
+        try:
+            return float(cleaned_str) if cleaned_str else 0
+        except ValueError:
+            return 0
 
+    # Extract and sum up amounts
     total_amount = sum(extract_amount(entry.get("amount", "0")) for entry in payment_entries)
 
     if total_amount == 0:
@@ -654,12 +661,12 @@ def create_journal_entry(bank_account, account, payment_entries):
             "posting_date": nowdate(),
             "accounts": accounts,
             "user_remark": "Journal Entry created for Bank Clearance",
-            
         })
 
         journal_entry.insert()
         journal_entry.submit()
-        clearance_date=nowdate()
+
+        clearance_date = nowdate()
         # ✅ Update clearance_date for the submitted Journal Entry
         frappe.db.set_value("Journal Entry", journal_entry.name, "clearance_date", clearance_date)
         frappe.db.commit()  # Ensure the change is saved
