@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import datetime
 from datetime import date
 import json 
+from frappe.utils import money_in_words
 
 @frappe.whitelist()
 def create_purchase_invoice(voucher_name):
@@ -606,4 +607,88 @@ def get_tax_rate(template_name):
     print("tax_rate",tax_rate)
     # Return the rate if found, otherwise None
     return tax_rate[0]["rate"] if tax_rate else None
+
+import re
+import json
+
+@frappe.whitelist()
+def create_journal_entry(bank_account, account, payment_entries):
+    if not payment_entries:
+        frappe.throw("No payment entries found to process.")
+
+    # Deserialize JSON string if necessary
+    if isinstance(payment_entries, str):
+        try:
+            payment_entries = json.loads(payment_entries)
+        except json.JSONDecodeError:
+            frappe.throw("Invalid JSON format for payment entries.")
+
+    if not isinstance(payment_entries, list):
+        frappe.throw("Payment entries should be a list of dictionaries.")
+
+    def extract_amount(amount_str):
+        match = re.search(r"[-+]?[0-9]*\.?[0-9]+", str(amount_str))
+        return float(match.group()) if match else 0
+
+    total_amount = sum(extract_amount(entry.get("amount", "0")) for entry in payment_entries)
+
+    if total_amount == 0:
+        frappe.throw("Total amount is zero. Cannot create Journal Entry.")
+
+    accounts = [
+        {
+            "account": account,
+            "debit_in_account_currency": total_amount if account == "PDC Payables - HP" else 0,
+            "credit_in_account_currency": 0 if account == "PDC Payables - HP" else total_amount,
+        },
+        {
+            "account": bank_account,
+            "debit_in_account_currency": 0 if account == "PDC Payables - HP" else total_amount,
+            "credit_in_account_currency": total_amount if account == "PDC Payables - HP" else 0,
+        },
+    ]
+
+    try:
+        journal_entry = frappe.get_doc({
+            "doctype": "Journal Entry",
+            "posting_date": nowdate(),
+            "accounts": accounts,
+            "user_remark": "Journal Entry created for Bank Clearance",
+            
+        })
+
+        journal_entry.insert()
+        journal_entry.submit()
+        clearance_date=nowdate()
+        # ✅ Update clearance_date for the submitted Journal Entry
+        frappe.db.set_value("Journal Entry", journal_entry.name, "clearance_date", clearance_date)
+        frappe.db.commit()  # Ensure the change is saved
+
+        for entry in payment_entries:
+            if "payment_entry" in entry and "clearance_date" in entry:
+                frappe.db.set_value("Payment Entry", entry["payment_entry"], "clearance_date", entry["clearance_date"])
+
+        return {"message": f"Journal Entry {journal_entry.name} created successfully."}
+
+    except Exception as e:
+        frappe.log_error(f"Error creating journal entry: {str(e)}")
+        frappe.throw("An error occurred while creating the Journal Entry.")
+
+@frappe.whitelist()
+def get_amount_in_words(amount, currency):
+    """
+    Convert the numeric amount to words.
+
+    Args:
+        amount (float): The amount to be converted.
+        currency (str): The currency of the amount.
+
+    Returns:
+        str: The amount in words.
+    """
+    try:
+        return money_in_words(amount, currency)
+    except Exception as e:
+        frappe.log_error(message=str(e), title="Error in get_amount_in_words")
+        frappe.throw(f"Unable to convert amount to words: {str(e)}")
 
