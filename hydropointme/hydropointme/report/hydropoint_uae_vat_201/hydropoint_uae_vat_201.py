@@ -23,22 +23,24 @@ def get_data(filters=None):
 	# VAT on Sales and Outputs section
 	start_index_sales = len(data)
 	emirates, amounts_by_emirate = append_vat_on_sales(data, filters)
-	append_total_row(data, start_index_sales, "VAT on Sales and All Other Outputs")
+	end_index_sales = len(data)
+	append_total_row(data, start_index_sales, end_index_sales, "VAT on Sales and All Other Outputs")
 
 	data.append({"no": "", "legend": "", "amount": "", "vat_amount": ""})  # Blank separator
 
 	# VAT on Expenses and Inputs section
 	start_index_expenses = len(data)
 	append_vat_on_expenses(data, filters)
-	append_total_row(data, start_index_expenses, "VAT on Expenses and All Other Inputs")
+	end_index_expenses = len(data)
+	append_total_row(data, start_index_expenses, end_index_expenses, "VAT on Expenses and All Other Inputs")
 
 	return data, emirates, amounts_by_emirate
 
-def append_total_row(data, section_start_index, section_label):
+def append_total_row(data, start_index, end_index, section_label):
 	total_amount = 0
 	total_vat_amount = 0
 
-	for row in data[section_start_index:]:
+	for row in data[start_index:end_index]:
 		total_amount += frappe.utils.flt(row.get("raw_amount") or 0)
 		total_vat_amount += frappe.utils.flt(row.get("raw_vat_amount") or 0)
 
